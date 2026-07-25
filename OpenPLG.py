@@ -9,6 +9,7 @@ vert_stretch = 1.0
 val_min = -1.5
 val_max = 1.5
 use_ridges = False
+use_biomes = False
 initial_x_offset = 0.0
 initial_y_offset = 0.0
 initial_water = -0.1
@@ -52,6 +53,7 @@ def generate_noise(octaves_val, scale_val, stretch_val, ridge_val, x_off, y_off,
 grid = pv.RectilinearGrid(range(detail[0]), range(detail[1]), [0])
 initial_terrain = generate_noise(initial_octaves, scale, vert_stretch, use_ridges, initial_x_offset, initial_y_offset, initial_weathering)
 grid.point_data["elevation"] = initial_terrain.ravel(order="F")
+grid.point_data["biomes"] = np.zeros_like(grid.point_data["elevation"])
 
 mesh_3d = grid.warp_by_scalar("elevation", factor=50)
 mesh_2d = grid.copy()
@@ -76,6 +78,7 @@ plotter.enable_parallel_projection()
 plotter.subplot(0, 1)
 plotter.set_background(color="lightskyblue", top="midnightblue")
 plotter.add_title("3D Terrain View", font_size=12)
+
 actor_3d = plotter.add_mesh(
     mesh_3d, 
     scalars="elevation", 
@@ -94,6 +97,7 @@ current_state = {
     "scale": scale, 
     "stretch": vert_stretch,
     "ridges": use_ridges,
+    "biomes": use_biomes,
     "x_off": initial_x_offset,
     "y_off": initial_y_offset,
     "water": initial_water,
@@ -112,17 +116,36 @@ def update_viewports():
     )
     
     flat_terrain = new_terrain.ravel(order="F")
-    grid.point_data["elevation"] = flat_terrain
     
-    actor_2d.mapper.dataset.point_data["elevation"] = flat_terrain
+    if current_state["biomes"]:
+        water_z = current_state["water"]
+        biome_data = np.zeros_like(flat_terrain)
+        biome_data[flat_terrain < water_z + 0.05] = -1.0 
+        biome_data[(flat_terrain >= water_z + 0.05) & (flat_terrain < 0.3)] = -0.2 
+        biome_data[(flat_terrain >= 0.3) & (flat_terrain < 0.8)] = 0.5 
+        biome_data[flat_terrain >= 0.8] = 1.5 
+        display_scalars = biome_data
+    else:
+        display_scalars = flat_terrain
+
+    grid.point_data["elevation"] = display_scalars
     
-    updated_3d = grid.warp_by_scalar("elevation", factor=50)
+    actor_2d.mapper.dataset.point_data["elevation"] = display_scalars
+    
+    grid.point_data["geometry_elevation"] = flat_terrain
+    updated_3d = grid.warp_by_scalar("geometry_elevation", factor=50)
     
     actor_3d.mapper.dataset.points = updated_3d.points
-    actor_3d.mapper.dataset.point_data["elevation"] = flat_terrain
+    actor_3d.mapper.dataset.point_data["elevation"] = display_scalars
     
     water_z = current_state["water"] * 50
     water_plane.points[:, 2] = water_z
+
+def export_mesh(state):
+    if state:
+        mesh_to_export = actor_3d.mapper.dataset.copy()
+        mesh_to_export.save("terrain_export.ply")
+        print("Mesh exported successfully as terrain_export.ply")
 
 def on_octave_change(value):
     current_state["octaves"] = int(value)
@@ -156,6 +179,10 @@ def on_ridge_change(value):
     current_state["ridges"] = value
     update_viewports()
 
+def on_biome_change(value):
+    current_state["biomes"] = value
+    update_viewports()
+
 plotter.subplot(0, 0)
 plotter.add_slider_widget(callback=on_x_pan, rng=[-5.0, 5.0], value=initial_x_offset, title="Pan X", pointa=(0.15, 0.28), pointb=(0.85, 0.28), style="modern")
 plotter.add_slider_widget(callback=on_y_pan, rng=[-5.0, 5.0], value=initial_y_offset, title="Pan Y", pointa=(0.15, 0.15), pointb=(0.85, 0.15), style="modern")
@@ -165,9 +192,11 @@ plotter.add_slider_widget(callback=on_octave_change, rng=[1, 10], value=initial_
 plotter.add_slider_widget(callback=on_scale_change, rng=[0.1, 5.0], value=scale, title="Scale", pointa=(0.35, 0.28), pointb=(0.65, 0.28), style="modern")
 plotter.add_slider_widget(callback=on_stretch_change, rng=[0.1, 3.0], value=vert_stretch, title="Y-Stretch", pointa=(0.68, 0.28), pointb=(0.98, 0.28), style="modern")
 
-plotter.add_slider_widget(callback=on_weathering_change, rng=[0, 20], value=initial_weathering, title="Weathering", pointa=(0.02, 0.15), pointb=(0.48, 0.15), style="modern")
+plotter.add_slider_widget(callback=on_weathering_change, rng=[0, 20], value=initial_weathering, title="Weather", pointa=(0.02, 0.15), pointb=(0.48, 0.15), style="modern")
 plotter.add_slider_widget(callback=on_water_change, rng=[-1.5, 1.5], value=initial_water, title="Water Lvl", pointa=(0.52, 0.15), pointb=(0.98, 0.15), style="modern")
 
-plotter.add_checkbox_button_widget(callback=on_ridge_change, value=use_ridges, position=(0.02, 0.88), size=30, border_size=2, color_on="green", color_off="red")
+plotter.add_checkbox_button_widget(callback=on_ridge_change, value=use_ridges, position=(20, 600), size=30, border_size=2, color_on="green", color_off="red")
+plotter.add_checkbox_button_widget(callback=on_biome_change, value=use_biomes, position=(20, 550), size=30, border_size=2, color_on="blue", color_off="gray")
+plotter.add_checkbox_button_widget(callback=export_mesh, value=False, position=(20, 500), size=30, border_size=2, color_on="white", color_off="black")
 
 plotter.show()
