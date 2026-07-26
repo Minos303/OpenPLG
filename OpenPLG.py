@@ -1,3 +1,9 @@
+import tkinter as tk
+from tkinter import filedialog
+import os
+import tempfile
+import zipfile
+import matplotlib.pyplot as plt
 from perlin_noise import PerlinNoise
 import numpy as np
 import pyvista as pv
@@ -53,6 +59,7 @@ def generate_noise(octaves_val, scale_val, stretch_val, ridge_val, x_off, y_off,
 grid = pv.RectilinearGrid(range(detail[0]), range(detail[1]), [0])
 initial_terrain = generate_noise(initial_octaves, scale, vert_stretch, use_ridges, initial_x_offset, initial_y_offset, initial_weathering)
 grid.point_data["elevation"] = initial_terrain.ravel(order="F")
+grid.point_data["geometry_elevation"] = np.copy(grid.point_data["elevation"])
 grid.point_data["biomes"] = np.zeros_like(grid.point_data["elevation"])
 
 mesh_3d = grid.warp_by_scalar("elevation", factor=50)
@@ -116,6 +123,7 @@ def update_viewports():
     )
     
     flat_terrain = new_terrain.ravel(order="F")
+    grid.point_data["geometry_elevation"] = flat_terrain
     
     if current_state["biomes"]:
         water_z = current_state["water"]
@@ -129,10 +137,8 @@ def update_viewports():
         display_scalars = flat_terrain
 
     grid.point_data["elevation"] = display_scalars
-    
     actor_2d.mapper.dataset.point_data["elevation"] = display_scalars
     
-    grid.point_data["geometry_elevation"] = flat_terrain
     updated_3d = grid.warp_by_scalar("geometry_elevation", factor=50)
     
     actor_3d.mapper.dataset.points = updated_3d.points
@@ -142,10 +148,58 @@ def update_viewports():
     water_plane.points[:, 2] = water_z
 
 def export_mesh(state):
-    if state:
-        mesh_to_export = actor_3d.mapper.dataset.copy()
-        mesh_to_export.save("terrain_export.ply")
-        print("Mesh exported successfully as terrain_export.ply")
+    if not state:
+        return
+
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes('-topmost', True)
+    
+    save_path = filedialog.asksaveasfilename(
+        title="Export Terrain Package",
+        defaultextension=".zip",
+        filetypes=[("ZIP Archive", "*.zip")]
+    )
+    
+    if not save_path:
+        return
+
+    geo_data = grid.point_data["geometry_elevation"].reshape(detail, order="F")
+    
+    h_min, h_max = np.min(geo_data), np.max(geo_data)
+    if h_max > h_min:
+        heightmap = (geo_data - h_min) / (h_max - h_min)
+    else:
+        heightmap = np.zeros_like(geo_data)
+
+    watermask = np.where(geo_data <= current_state["water"], 1.0, 0.0)
+
+    gy, gx = np.gradient(geo_data)
+    slopemap = np.sqrt(gx**2 + gy**2)
+    s_max = np.max(slopemap)
+    if s_max > 0:
+        slopemap = slopemap / s_max
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        ply_path = os.path.join(temp_dir, "terrain.ply")
+        actor_3d.mapper.dataset.save(ply_path)
+
+        hm_path = os.path.join(temp_dir, "heightmap.png")
+        plt.imsave(hm_path, heightmap.T, cmap="gray", origin="lower")
+
+        wm_path = os.path.join(temp_dir, "watermask.png")
+        plt.imsave(wm_path, watermask.T, cmap="gray", origin="lower")
+
+        sm_path = os.path.join(temp_dir, "slopemap.png")
+        plt.imsave(sm_path, slopemap.T, cmap="gray", origin="lower")
+
+        with zipfile.ZipFile(save_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            zipf.write(ply_path, arcname="terrain.ply")
+            zipf.write(hm_path, arcname="textures/heightmap.png")
+            zipf.write(wm_path, arcname="textures/watermask.png")
+            zipf.write(sm_path, arcname="textures/slopemap.png")
+            
+    print(f"Successfully exported terrain package to: {save_path}")
 
 def on_octave_change(value):
     current_state["octaves"] = int(value)
