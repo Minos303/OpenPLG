@@ -16,10 +16,15 @@ val_min = -1.5
 val_max = 1.5
 use_ridges = False
 use_biomes = False
+use_render_mode = False
 initial_x_offset = 0.0
 initial_y_offset = 0.0
 initial_water = -0.1
 initial_weathering = 0
+initial_export_res = 400
+initial_thermal = 0
+initial_hydro = 0
+use_rivers = False
 
 def apply_weathering(grid_map, passes):
     for _ in range(int(passes)):
@@ -34,15 +39,37 @@ def apply_weathering(grid_map, passes):
         grid_map = smoothed
     return grid_map
 
-def generate_noise(octaves_val, scale_val, stretch_val, ridge_val, x_off, y_off, weathering_val):
+def apply_advanced_simulations(grid_map, thermal_passes, hydro_passes, enable_rivers):
+    for _ in range(int(thermal_passes)):
+        smoothed = (np.roll(grid_map, 1, axis=0) + np.roll(grid_map, -1, axis=0) + 
+                    np.roll(grid_map, 1, axis=1) + np.roll(grid_map, -1, axis=1)) / 4.0
+        diff = grid_map - smoothed
+        grid_map = np.where(diff > 0.04, grid_map - diff * 0.4, grid_map)
+
+    for _ in range(int(hydro_passes)):
+        gy, gx = np.gradient(grid_map)
+        slope = np.sqrt(gx**2 + gy**2)
+        carving = slope * 0.05
+        deposition = np.roll(carving, 1, axis=0) * 0.02
+        grid_map = grid_map - carving + deposition
+
+    if enable_rivers:
+        gy, gx = np.gradient(grid_map)
+        flow_accumulation = np.sqrt(gx**2 + gy**2)
+        river_channels = np.where(flow_accumulation > np.percentile(flow_accumulation, 85), 0.15, 0.0)
+        grid_map -= river_channels
+
+    return grid_map
+
+def generate_noise(octaves_val, scale_val, stretch_val, ridge_val, x_off, y_off, weathering_val, therm_val, hydro_val, river_val, grid_dims):
     base_noise = PerlinNoise(octaves=int(octaves_val))
     detail_noise = PerlinNoise(octaves=int(octaves_val * 2.5))
-    grid_map = np.zeros(detail)
+    grid_map = np.zeros(grid_dims)
     
-    for i in range(detail[0]):
-        for j in range(detail[1]):
-            x = ((i / detail[0]) + x_off) * scale_val
-            y = ((j / detail[1]) + y_off) * scale_val * stretch_val
+    for i in range(grid_dims[0]):
+        for j in range(grid_dims[1]):
+            x = ((i / grid_dims[0]) + x_off) * scale_val
+            y = ((j / grid_dims[1]) + y_off) * scale_val * stretch_val
 
             val = base_noise([x, y])
             val += 0.35 * detail_noise([x, y])
@@ -53,11 +80,12 @@ def generate_noise(octaves_val, scale_val, stretch_val, ridge_val, x_off, y_off,
             grid_map[i][j] = val * stretch_val
 
     grid_map = apply_weathering(grid_map, weathering_val)
+    grid_map = apply_advanced_simulations(grid_map, therm_val, hydro_val, river_val)
     
     return np.clip(grid_map, val_min, val_max)
 
 grid = pv.RectilinearGrid(range(detail[0]), range(detail[1]), [0])
-initial_terrain = generate_noise(initial_octaves, scale, vert_stretch, use_ridges, initial_x_offset, initial_y_offset, initial_weathering)
+initial_terrain = generate_noise(initial_octaves, scale, vert_stretch, use_ridges, initial_x_offset, initial_y_offset, initial_weathering, initial_thermal, initial_hydro, use_rivers, detail)
 grid.point_data["elevation"] = initial_terrain.ravel(order="F")
 grid.point_data["geometry_elevation"] = np.copy(grid.point_data["elevation"])
 grid.point_data["biomes"] = np.zeros_like(grid.point_data["elevation"])
@@ -105,10 +133,15 @@ current_state = {
     "stretch": vert_stretch,
     "ridges": use_ridges,
     "biomes": use_biomes,
+    "render_mode": use_render_mode,
     "x_off": initial_x_offset,
     "y_off": initial_y_offset,
     "water": initial_water,
-    "weathering": initial_weathering
+    "weathering": initial_weathering,
+    "export_res": initial_export_res,
+    "thermal": initial_thermal,
+    "hydro": initial_hydro,
+    "rivers": use_rivers
 }
 
 def update_viewports():
@@ -119,7 +152,11 @@ def update_viewports():
         current_state["ridges"],
         current_state["x_off"],
         current_state["y_off"],
-        current_state["weathering"]
+        current_state["weathering"],
+        current_state["thermal"],
+        current_state["hydro"],
+        current_state["rivers"],
+        detail
     )
     
     flat_terrain = new_terrain.ravel(order="F")
@@ -164,8 +201,32 @@ def export_mesh(state):
     if not save_path:
         return
 
-    geo_data = grid.point_data["geometry_elevation"].reshape(detail, order="F")
-    
+    if current_state["render_mode"]:
+        print(f"Rendering high-resolution export ({int(current_state['export_res'])}x{int(current_state['export_res'])})...")
+        exp_dims = (int(current_state["export_res"]), int(current_state["export_res"]))
+        geo_matrix = generate_noise(
+            current_state["octaves"], 
+            current_state["scale"], 
+            current_state["stretch"],
+            current_state["ridges"],
+            current_state["x_off"],
+            current_state["y_off"],
+            current_state["weathering"],
+            current_state["thermal"],
+            current_state["hydro"],
+            current_state["rivers"],
+            exp_dims
+        )
+        
+        temp_grid = pv.RectilinearGrid(range(exp_dims[0]), range(exp_dims[1]), [0])
+        temp_grid.point_data["elevation"] = geo_matrix.ravel(order="F")
+        export_mesh_obj = temp_grid.warp_by_scalar("elevation", factor=50)
+        geo_data = geo_matrix
+    else:
+        exp_dims = detail
+        export_mesh_obj = actor_3d.mapper.dataset.copy()
+        geo_data = grid.point_data["geometry_elevation"].reshape(detail, order="F")
+
     h_min, h_max = np.min(geo_data), np.max(geo_data)
     if h_max > h_min:
         heightmap = (geo_data - h_min) / (h_max - h_min)
@@ -179,10 +240,12 @@ def export_mesh(state):
     s_max = np.max(slopemap)
     if s_max > 0:
         slopemap = slopemap / s_max
+        
+    snowmask = np.where((heightmap > 0.65) & (slopemap < 0.25), 1.0, 0.0)
 
     with tempfile.TemporaryDirectory() as temp_dir:
         ply_path = os.path.join(temp_dir, "terrain.ply")
-        actor_3d.mapper.dataset.save(ply_path)
+        export_mesh_obj.save(ply_path)
 
         hm_path = os.path.join(temp_dir, "heightmap.png")
         plt.imsave(hm_path, heightmap.T, cmap="gray", origin="lower")
@@ -192,14 +255,19 @@ def export_mesh(state):
 
         sm_path = os.path.join(temp_dir, "slopemap.png")
         plt.imsave(sm_path, slopemap.T, cmap="gray", origin="lower")
+        
+        sn_path = os.path.join(temp_dir, "snowmask.png")
+        plt.imsave(sn_path, snowmask.T, cmap="gray", origin="lower")
 
         with zipfile.ZipFile(save_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
             zipf.write(ply_path, arcname="terrain.ply")
             zipf.write(hm_path, arcname="textures/heightmap.png")
             zipf.write(wm_path, arcname="textures/watermask.png")
             zipf.write(sm_path, arcname="textures/slopemap.png")
+            zipf.write(sn_path, arcname="textures/snowmask.png")
             
     print(f"Successfully exported terrain package to: {save_path}")
+    plotter.widgets[3].set_value(False)
 
 def on_octave_change(value):
     current_state["octaves"] = int(value)
@@ -229,6 +297,17 @@ def on_weathering_change(value):
     current_state["weathering"] = int(value)
     update_viewports()
 
+def on_thermal_change(value):
+    current_state["thermal"] = int(value)
+    update_viewports()
+
+def on_hydro_change(value):
+    current_state["hydro"] = int(value)
+    update_viewports()
+
+def on_export_res_change(value):
+    current_state["export_res"] = int(value)
+
 def on_ridge_change(value):
     current_state["ridges"] = value
     update_viewports()
@@ -236,21 +315,42 @@ def on_ridge_change(value):
 def on_biome_change(value):
     current_state["biomes"] = value
     update_viewports()
+    
+def on_river_change(value):
+    current_state["rivers"] = value
+    update_viewports()
+    
+def on_render_mode_change(value):
+    current_state["render_mode"] = value
 
 plotter.subplot(0, 0)
-plotter.add_slider_widget(callback=on_x_pan, rng=[-5.0, 5.0], value=initial_x_offset, title="Pan X", pointa=(0.15, 0.28), pointb=(0.85, 0.28), style="modern")
-plotter.add_slider_widget(callback=on_y_pan, rng=[-5.0, 5.0], value=initial_y_offset, title="Pan Y", pointa=(0.15, 0.15), pointb=(0.85, 0.15), style="modern")
+plotter.add_slider_widget(callback=on_x_pan, rng=[-5.0, 5.0], value=initial_x_offset, title="Pan X", pointa=(0.02, 0.28), pointb=(0.48, 0.28), style="modern")
+plotter.add_slider_widget(callback=on_y_pan, rng=[-5.0, 5.0], value=initial_y_offset, title="Pan Y", pointa=(0.02, 0.15), pointb=(0.48, 0.15), style="modern")
+plotter.add_slider_widget(callback=on_export_res_change, rng=[100, 1000], value=initial_export_res, title="Export Res", pointa=(0.52, 0.28), pointb=(0.98, 0.28), style="modern")
 
 plotter.subplot(0, 1)
-plotter.add_slider_widget(callback=on_octave_change, rng=[1, 10], value=initial_octaves, title="Detail", pointa=(0.02, 0.28), pointb=(0.32, 0.28), style="modern")
-plotter.add_slider_widget(callback=on_scale_change, rng=[0.1, 5.0], value=scale, title="Scale", pointa=(0.35, 0.28), pointb=(0.65, 0.28), style="modern")
-plotter.add_slider_widget(callback=on_stretch_change, rng=[0.1, 3.0], value=vert_stretch, title="Y-Stretch", pointa=(0.68, 0.28), pointb=(0.98, 0.28), style="modern")
+plotter.add_slider_widget(callback=on_octave_change, rng=[1, 10], value=initial_octaves, title="Detail", pointa=(0.02, 0.28), pointb=(0.24, 0.28), style="modern")
+plotter.add_slider_widget(callback=on_scale_change, rng=[0.1, 5.0], value=scale, title="Scale", pointa=(0.26, 0.28), pointb=(0.48, 0.28), style="modern")
+plotter.add_slider_widget(callback=on_stretch_change, rng=[0.1, 3.0], value=vert_stretch, title="Y-Stretch", pointa=(0.50, 0.28), pointb=(0.72, 0.28), style="modern")
+plotter.add_slider_widget(callback=on_water_change, rng=[-1.5, 1.5], value=initial_water, title="Water Lvl", pointa=(0.74, 0.28), pointb=(0.98, 0.28), style="modern")
 
-plotter.add_slider_widget(callback=on_weathering_change, rng=[0, 20], value=initial_weathering, title="Weather", pointa=(0.02, 0.15), pointb=(0.48, 0.15), style="modern")
-plotter.add_slider_widget(callback=on_water_change, rng=[-1.5, 1.5], value=initial_water, title="Water Lvl", pointa=(0.52, 0.15), pointb=(0.98, 0.15), style="modern")
+plotter.add_slider_widget(callback=on_weathering_change, rng=[0, 20], value=initial_weathering, title="Weathering", pointa=(0.02, 0.15), pointb=(0.32, 0.15), style="modern")
+plotter.add_slider_widget(callback=on_thermal_change, rng=[0, 20], value=initial_thermal, title="Thermal Ero", pointa=(0.35, 0.15), pointb=(0.65, 0.15), style="modern")
+plotter.add_slider_widget(callback=on_hydro_change, rng=[0, 20], value=initial_hydro, title="Hydro Ero", pointa=(0.68, 0.15), pointb=(0.98, 0.15), style="modern")
 
 plotter.add_checkbox_button_widget(callback=on_ridge_change, value=use_ridges, position=(20, 600), size=30, border_size=2, color_on="green", color_off="red")
+plotter.add_text("Ridged Noise", position=(60, 605), font_size=12, color="white")
+
 plotter.add_checkbox_button_widget(callback=on_biome_change, value=use_biomes, position=(20, 550), size=30, border_size=2, color_on="blue", color_off="gray")
-plotter.add_checkbox_button_widget(callback=export_mesh, value=False, position=(20, 500), size=30, border_size=2, color_on="white", color_off="black")
+plotter.add_text("Biome Mask", position=(60, 555), font_size=12, color="white")
+
+plotter.add_checkbox_button_widget(callback=on_river_change, value=use_rivers, position=(20, 500), size=30, border_size=2, color_on="cyan", color_off="gray")
+plotter.add_text("River Pathing", position=(60, 505), font_size=12, color="white")
+
+plotter.add_checkbox_button_widget(callback=on_render_mode_change, value=use_render_mode, position=(20, 450), size=30, border_size=2, color_on="orange", color_off="gray")
+plotter.add_text("High-Res Render Mode", position=(60, 455), font_size=12, color="white")
+
+plotter.add_checkbox_button_widget(callback=export_mesh, value=False, position=(20, 400), size=30, border_size=2, color_on="white", color_off="black")
+plotter.add_text("Export Data Package", position=(60, 405), font_size=12, color="white")
 
 plotter.show()
