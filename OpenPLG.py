@@ -115,6 +115,7 @@ water_plane = pv.Plane(
     i_resolution=1,
     j_resolution=1
 )
+#Main page setup
 plotter = pv.Plotter(shape=(1, 2), window_size=[1600, 900])
 plotter.enable_anti_aliasing('fxaa')
 plotter.subplot(0, 0)
@@ -138,6 +139,7 @@ actor_3d = plotter.add_mesh(
     show_scalar_bar=False)
 actor_water = plotter.add_mesh(
     water_plane, 
+    #The water is currently transparent when a mesh is behind it, this is an error but I do not have a fix just yet
     color="#005B96", 
     opacity=0.98, 
     specular=0.9,
@@ -146,6 +148,7 @@ actor_water = plotter.add_mesh(
     ambient=0.3,
     show_scalar_bar=False
 )
+#Pretty obvous what these do
 plotter.view_isometric()
 current_state = {
     "octaves": initial_octaves, 
@@ -163,6 +166,7 @@ current_state = {
     "hydro": initial_hydro,
     "rivers": use_rivers
 }
+#Updates the functions stuff for the veiwport
 def update_viewports():
     new_terrain = generate_noise(
         current_state["octaves"], 
@@ -177,6 +181,7 @@ def update_viewports():
         current_state["rivers"],
         detail
     )
+    #Unless you know what you are doing I would not recommend changing any of this stuff, all the values have been sourced from trial and error
     flat_terrain = new_terrain.ravel(order="F")
     grid.point_data["geometry_elevation"] = flat_terrain
     if current_state["biomes"]:
@@ -196,6 +201,9 @@ def update_viewports():
     actor_3d.mapper.dataset.point_data["elevation"] = display_scalars
     water_z = current_state["water"] * 50
     water_plane.points[:, 2] = water_z
+########################################
+
+#The exporting, if you are having a problem with crashing I would recommend modifying values here.
 def export_mesh(state):
     if not state:
         return
